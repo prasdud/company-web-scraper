@@ -24,3 +24,9 @@ It has been almost 1 hour since starting, its not as easy as it looks but very i
 
 some companies return the correct dork result without the long description, however some require the description else they return the wrong website. i will have to summarize the description or extract 2 -3 keywords maybe using AI
 
+
+
+ISSUE
+for tomra.com the /careers page exists but my scraper is not picking it up, upon further inspection i realized that when running curl with the /careers link it throws a 403. which means its not my mistake but cloudflare is blocking the scraper.
+
+so right now i cant access that page but GPT had a solution that i dont need to access the page i just need to know it exists - very smart
