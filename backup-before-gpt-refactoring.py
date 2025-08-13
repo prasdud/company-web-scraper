@@ -15,9 +15,6 @@ import time
 from spacy.lang.en.stop_words import STOP_WORDS
 import os
 from dotenv import load_dotenv
-from urllib.parse import urljoin
-import requests
-from bs4 import BeautifulSoup
 
 # -----------------------------
 # Configuration / Constants
@@ -25,7 +22,7 @@ from bs4 import BeautifulSoup
 NUM_WORKERS = 5        # 1 worker per 10 companies (adjustable)
 COMPANIES_FILE = "data.csv"  # Input data
 MAX_TOTAL_JOBS = 200   # Stop after 200 jobs
-load_dotenv()
+load_dotenv
 
 # Google Custom Search API Configuration
 GOOGLE_API_KEY = os.getenv("CSE_API_KEY")  # Replace with your actual API key
@@ -350,80 +347,18 @@ def find_company_info(company_name, company_description):
     }
 
 
-
-def scrape_jobs(jobs_page_url, max_jobs=3):
+def scrape_jobs(jobs_page_url):
     """
-    Scrape top 'max_jobs' from the jobs page.
-    Returns a list of dicts: {'title': ..., 'url': ...}
+    Scrape top 3 jobs from the jobs page.
+    Return a list of dictionaries with job details:
+        - title
+        - url
+        - location
+        - date
+        - description
     """
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                      "(KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36"
-    }
-    
-    try:
-        resp = requests.get(jobs_page_url, headers=headers, timeout=10)
-        resp.raise_for_status()
-    except requests.RequestException:
-        return []
-
-    soup = BeautifulSoup(resp.text, "html.parser")
-    jobs = []
-
-    # -----------------------------
-    # JS-heavy portals: Look for JSON or embedded jobs
-    # -----------------------------
-    page_json_input = soup.find("input", {"id": "pageJson"})
-    if page_json_input:
-        # Zoho Recruit style JSON
-        json_text = page_json_input.get("value")
-        json_text = json_text.replace("&#x27;", "'").replace("&quot;", '"')
-        try:
-            data = json.loads(json_text)
-            sections = data.get("section", {}).get("data", [])
-            for block in sections:
-                if len(jobs) >= max_jobs:
-                    break
-                if block.get("blocktype") == "jobs":
-                    for job in block.get("jobs", []):
-                        if len(jobs) >= max_jobs:
-                            break
-                        title = job.get("title") or job.get("name")
-                        url = job.get("url") or job.get("link")
-                        if url and not url.startswith("http"):
-                            url = urljoin(jobs_page_url, url)
-                        if title and url:
-                            jobs.append({"title": title, "url": url})
-            return jobs[:max_jobs]
-        except Exception as e:
-            print("Error parsing JS jobs JSON:", e)
-            # fallback to normal HTML scraping
-
-    # -----------------------------
-    # HTML scraping fallback
-    # -----------------------------
-    # Common patterns for Lever, Greenhouse, Workable, etc.
-    job_links = soup.find_all("a", href=True)
-    for link in job_links:
-        if len(jobs) >= max_jobs:
-            break
-        href = link.get("href")
-        title = link.get_text(strip=True)
-        if not href or not title:
-            continue
-        # Filter obvious apply buttons
-        if any(skip in title.lower() for skip in ["apply", "view job", "learn more", "more details"]):
-            continue
-        # Heuristic: URL contains job posting keyword
-        if any(keyword in href.lower() for keyword in ["/job/", "/jobs/", "/position/", "/openings/"]):
-            full_url = urljoin(jobs_page_url, href)
-            jobs.append({"title": title, "url": full_url})
-
-    return jobs[:max_jobs]
-
-
-
-
+    # TODO: Implement scraping logic
+    return []
 
 
 def verify_job(job):
@@ -435,75 +370,24 @@ def verify_job(job):
     return True
 
 
-def process_companies_csv(file_path="data.csv", max_jobs=200):
+def process_company(company):
     """
-    Reads a CSV with Company Name and Company Description.
-    Finds company info, scrapes up to 3 jobs per company,
-    updates the CSV, and stops when max_jobs is reached.
+    Worker function: process one company
     """
-    import pandas as pd
-    from tqdm import tqdm
-
-    # Load CSV
-    data = pd.read_csv(file_path)
-
-    # Initialize counter
-    total_jobs_counter = 0
-
-    # Prepare output columns if they don't exist
-    for col in [
-        "Website URL", "Linkedin URL", "Careers Page URL", "Job listings page URL",
-        "job post1 URL", "job post1 title",
-        "job post2 URL", "job post2 title",
-        "job post3 URL", "job post3 title"
-    ]:
-        if col not in data.columns:
-            data[col] = ""
-
-    # Loop over companies
+    company_info = find_company_info(company)
     
-    #below for all 200
-    #for idx, row in tqdm(data.iterrows(), total=len(data)):
-    #TEST_LIMIT = 10  # only process 5 companies for testing
-    #for idx, row in tqdm(data.head(TEST_LIMIT).iterrows(), total=TEST_LIMIT):
-    for idx, row in tqdm(data.iterrows(), total=len(data)):
-        if total_jobs_counter >= max_jobs:
-            print(f"Reached {max_jobs} jobs. Stopping.")
-            break
-
-        company_name = row["Company Name"]
-        company_description = row["Company Description"]
-
-        # -----------------------------
-        # Use your existing logic
-        # -----------------------------
-        info = find_company_info(company_name, company_description)
-
-        # Fill URLs in the dataframe
-        data.at[idx, "Website URL"] = info.get("website", "")
-        data.at[idx, "Linkedin URL"] = info.get("linkedin", "")
-        data.at[idx, "Careers Page URL"] = info.get("careers_page", "")
-        data.at[idx, "Job listings page URL"] = info.get("jobs_page", "")
-
-        # -----------------------------
-        # Scrape jobs
-        # -----------------------------
-        jobs_page_url = info.get("jobs_page") or info.get("careers_page")
-        if jobs_page_url:
-            jobs = scrape_jobs(jobs_page_url)
-            for i, job in enumerate(jobs[:3]):  # max 3 jobs per company
-                data.at[idx, f"job post{i+1} URL"] = job["url"]
-                data.at[idx, f"job post{i+1} title"] = job["title"]
-                total_jobs_counter += 1
-
-                if total_jobs_counter >= max_jobs:
+    if not company_info.get("jobs_page"):
+        return  # No jobs found, skip
+    
+    jobs = scrape_jobs(company_info["jobs_page"])
+    
+    for job in jobs:
+        if verify_job(job):
+            with collected_jobs_lock:
+                if len(collected_jobs) < MAX_TOTAL_JOBS:
+                    collected_jobs.append(job)
+                else:
                     break
-
-    # -----------------------------
-    # Save CSV
-    # -----------------------------
-    data.to_csv(file_path, index=False)
-    print(f"Done! Total jobs collected: {total_jobs_counter}")
 
 
 def worker():
@@ -601,7 +485,6 @@ def verify_url(url, return_response=False):
         return False
 
 
-
 # -----------------------------
 # Main Execution
 # -----------------------------
@@ -615,8 +498,8 @@ def main():
         print("\nProceeding with example anyway...\n")
     
     # Example company
-    company_name = "Fuse Energy"
-    company_description = "Accelerating global renewable energy transition with comprehensive solutions."
+    company_name = "Plus"
+    company_description = "AI-powered autonomous driving for a safer, greener world."
 
     print(f"Processing company: {company_name}")
     print(f"Description: {company_description}\n")
@@ -624,7 +507,7 @@ def main():
     # Find company info using Google Custom Search API
     info = find_company_info(company_name, company_description)
 
-    # Check and print company URLs
+    # Check and print results
     print(f"\nResults for '{company_name}':\n" + "-"*50)
     for key, url in info.items():
         if url:
@@ -641,26 +524,5 @@ def main():
         print(f"Status: {status}\n")
     print("-"*50 + "\n")
 
-    # -----------------------------
-    # Scrape latest 3 jobs if jobs_page exists
-    # -----------------------------
-    jobs_page_url = info.get("jobs_page") or info.get("careers_page")
-    if jobs_page_url:
-        print(f"Scraping jobs from: {jobs_page_url}\n")
-        jobs = scrape_jobs(jobs_page_url)
-        if jobs:
-            for idx, job in enumerate(jobs, 1):
-                print(f"Job {idx}:")
-                print(f"Title: {job['title']}")
-                print(f"URL: {job['url']}\n")
-        else:
-            print("No jobs found on this page.")
-    else:
-        print("No careers or jobs page found to scrape.")
-
-    print("-"*50 + "\n")
-    print("✅ Test complete.")
-
 if __name__ == "__main__":
-    process_companies_csv("data.csv", max_jobs=200)
-
+    main()

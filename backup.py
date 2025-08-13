@@ -10,19 +10,14 @@ from queue import Queue
 from googlesearch import search
 import requests
 from bs4 import BeautifulSoup
-#import nltk
-#from nltk.corpus import stopwords
-#from nltk.tokenize import word_tokenize
 import spacy
 
 # -----------------------------
 # Configuration / Constants
 # -----------------------------
-NUM_WORKERS = 5        # 1 worker per 10 companies (adjustable)
-COMPANIES_FILE = "data.csv"  # Input data
-MAX_TOTAL_JOBS = 200   # Stop after 200 jobs
-#nltk.download('punkt')
-#nltk.download('stopwords')
+NUM_WORKERS = 5        # 1 worker per 10 companies
+COMPANIES_FILE = "data.csv"
+MAX_TOTAL_JOBS = 200
 nlp = spacy.load("en_core_web_sm")
 
 # -----------------------------
