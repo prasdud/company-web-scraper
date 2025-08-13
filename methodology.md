@@ -30,3 +30,9 @@ ISSUE
 for tomra.com the /careers page exists but my scraper is not picking it up, upon further inspection i realized that when running curl with the /careers link it throws a 403. which means its not my mistake but cloudflare is blocking the scraper.
 
 so right now i cant access that page but GPT had a solution that i dont need to access the page i just need to know it exists - very smart
+
+
+END OF DAY 1
+running the script i get 80 job postings. i will need to have more aggresive and indepth fallback for the job scraper
+good news - it gets the website linkedin careers page 
+needs to get more job post listings and jobs
