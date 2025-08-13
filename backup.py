@@ -319,8 +319,8 @@ COMPANIES_FILE = "data.csv"  # Input data
 MAX_TOTAL_JOBS = 200   # Stop after 200 jobs
 
 # Google Custom Search API Configuration
-GOOGLE_API_KEY = "AIzaSyDWydZLiu24vWxRXJbBHBT_IM7X4i515Js"  # Replace with your actual API key
-GOOGLE_CSE_ID = "43c5e13fe87fe4125"   # Replace with your Custom Search Engine ID
+GOOGLE_API_KEY = ""  # Replace with your actual API key
+GOOGLE_CSE_ID = ""   # Replace with your Custom Search Engine ID
 GOOGLE_API_ENDPOINT = "https://www.googleapis.com/customsearch/v1"
 
 nlp = spacy.load("en_core_web_sm")
