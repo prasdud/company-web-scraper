@@ -9,6 +9,7 @@ import pandas as pd
 from queue import Queue
 from googlesearch import search
 import requests
+from bs4 import BeautifulSoup
 
 # -----------------------------
 # Configuration / Constants
@@ -24,12 +25,22 @@ company_queue = Queue()     # Companies to process
 collected_jobs = []         # All scraped job postings (thread-safe access needed)
 collected_jobs_lock = threading.Lock()
 data = pd.read_csv(COMPANIES_FILE)
-
+careers_paths = ["/careers", "/jobs", "/about-us/careers", "/talent", "/join-us"]
+third_party_job_sites = [
+    "jobs.lever.co",
+    ".zohorecruit.com/jobs/Careers",
+    "boards.greenhouse.io",
+    "workable.com",
+    "smartrecruiters.com"
+]
+job_link_patterns = ["/job/", "/apply/", "/careers/", "/positions/", "/openings/"]
 # -----------------------------
 # Functions
 # -----------------------------
 
 def find_company_info(company_name, company_description):
+
+    flag_career_page_equals_jobs_page = False 
 
     website_dork = f"{company_name} {company_description} site:.com"
     linkedin_dork = f"{company_name} {company_description} site:linkedin.com"
@@ -43,12 +54,55 @@ def find_company_info(company_name, company_description):
         except:
             return ""
         return ""
-
+    
     website_url = get_first_result(website_dork)
     linkedin_url = get_first_result(linkedin_dork)
-    careers_page_url = get_first_result(careers_page_dork)
-    jobs_page_url = get_first_result(jobs_page_dork)
+    # AT THIS POINT WE GET WEBSITE AND LINKEDIN
 
+    def career_paths_check(website_url):
+        for path in careers_paths:
+            url_to_check = website_url.rstrip("/") + path
+            resp, valid = verify_url(url_to_check, return_response=True)
+
+            if valid:
+                content_type = resp.headers.get("Content-Type", "")
+            if "text/html" in content_type:
+                return url_to_check
+        return ""
+    
+    careers_page_url = career_paths_check(website_url)
+
+    def career_page_has_jobs(careers_page_url):
+        resp, valid = verify_url(careers_page_url, return_response=True)
+
+        if not valid:
+            return False
+        
+        soup = BeautifulSoup(resp.text, "html.parser")
+        page_text = soup.get_text().lower()
+
+        for a_tag in soup.find_all("a", href=True):
+            href = a_tag["href"].lower()
+            for pattern in job_link_patterns:
+                if pattern in href:
+                    return True
+                
+        job_items = soup.find_all(["li", "div"], class_=lambda x: x and "job" in x.lower())
+        if len(job_items) >= 1:  #threshold for confidence
+            return True
+        
+        return False
+
+
+    if career_page_has_jobs(careers_page_url):
+        jobs_page_url = careers_page_url
+    else:
+        jobs_page_url = ""
+        for portal in third_party_job_sites:
+            candidate = get_first_result(f"{company_name} jobs site:{portal}") # here need to check URL instead of name later
+            if candidate:
+                jobs_page_url = candidate
+                break
 
 
     return {
@@ -111,14 +165,20 @@ def worker():
         process_company(company)
         company_queue.task_done()
 
-def verify_url(url):
+
+
+def verify_url(url, return_response=False):
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36"}
     try:
-        if not url.startswith("http"):
-            url = "https://" + url  # ensure proper scheme
         response = requests.get(url, headers=headers, timeout=5)
-        return response.status_code == 200
+        is_valid = response.status_code == 200
+        if return_response:
+            return response, is_valid
+        else:
+            return is_valid
     except:
+        if return_response:
+            return None, False
         return False
 
 
@@ -127,17 +187,29 @@ def verify_url(url):
 # Main Execution
 # -----------------------------
 def main():
+    # Example company
     company_name = "Willow"
     company_description = "Optimize buildings for security, sustainability, and efficiency with real-time integrated facility management."
 
+    # Find company info
     info = find_company_info(company_name, company_description)
 
-    for key in info:
-        url = info[key]
-        if url and verify_url(url):
-            print(f"{key}: {url} ✅")
+    # Check and print results
+    print(f"\nResults for '{company_name}':\n" + "-"*50)
+    for key, url in info.items():
+        if url:
+            try:
+                if verify_url(url):
+                    status = "✅ Reachable"
+                else:
+                    status = "❌ Not reachable"
+            except Exception as e:
+                status = f"❌ Error verifying URL: {e}"
         else:
-            print(f"{key}: {url} ❌ (not reachable or empty)")
+            status = "❌ Empty"
+        print(f"{key}: {url} --> {status}")
+    print("-"*50 + "\n")
 
 if __name__ == "__main__":
     main()
+
