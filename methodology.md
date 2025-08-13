@@ -18,3 +18,9 @@ although i am now thinking i should focus and sort the list based on service pro
 
 
 i now see that not all websites would have a regular companyName.com, so i will have to take the company description along with the company name in the google dork
+
+
+It has been almost 1 hour since starting, its not as easy as it looks but very interesting
+
+some companies return the correct dork result without the long description, however some require the description else they return the wrong website. i will have to summarize the description or extract 2 -3 keywords maybe using AI
+

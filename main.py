@@ -10,6 +10,10 @@ from queue import Queue
 from googlesearch import search
 import requests
 from bs4 import BeautifulSoup
+#import nltk
+#from nltk.corpus import stopwords
+#from nltk.tokenize import word_tokenize
+import spacy
 
 # -----------------------------
 # Configuration / Constants
@@ -17,6 +21,9 @@ from bs4 import BeautifulSoup
 NUM_WORKERS = 5        # 1 worker per 10 companies (adjustable)
 COMPANIES_FILE = "data.csv"  # Input data
 MAX_TOTAL_JOBS = 200   # Stop after 200 jobs
+#nltk.download('punkt')
+#nltk.download('stopwords')
+nlp = spacy.load("en_core_web_sm")
 
 # -----------------------------
 # Shared Data Structures
@@ -30,8 +37,8 @@ third_party_job_sites = [
     "jobs.lever.co",
     ".zohorecruit.com/jobs/Careers",
     "boards.greenhouse.io",
-    "workable.com",
-    "smartrecruiters.com"
+    "apply.workable.com",
+    "careers.smartrecruiters.com"
 ]
 job_link_patterns = ["/job/", "/apply/", "/careers/", "/positions/", "/openings/"]
 # -----------------------------
@@ -39,13 +46,42 @@ job_link_patterns = ["/job/", "/apply/", "/careers/", "/positions/", "/openings/
 # -----------------------------
 
 def find_company_info(company_name, company_description):
+    
+    def extract_keywords(description, top_n=2):
+        doc = nlp(description)
+        
+        # Collect noun chunks (multi-word phrases)
+        phrases = [chunk.text.lower() for chunk in doc.noun_chunks]
+        
+        # Optionally, add single nouns that are important
+        nouns = [token.text.lower() for token in doc if token.pos_ == "NOUN"]
+        
+        # Combine both lists
+        candidates = phrases + nouns
+        
+        # Remove duplicates and pick top_n
+        seen = set()
+        keywords = []
+        for word in candidates:
+            if word not in seen and word.isalpha():
+                keywords.append(word)
+                seen.add(word)
+            if len(keywords) == top_n:
+                break
+                
+        return keywords
+    
+    keywords = extract_keywords(company_description)
+    description_keywords = " ".join(keywords)
+    print(f"Description keywords -> {description_keywords} ")
 
     flag_career_page_equals_jobs_page = False 
 
-    website_dork = f"{company_name} {company_description} site:.com"
-    linkedin_dork = f"{company_name} {company_description} site:linkedin.com"
-    careers_page_dork = f"{company_name} {company_description} site:.com careers"
-    jobs_page_dork = f"{company_name} {company_description} site:.com jobs"
+    website_dork = f'"{company_name}" {description_keywords} official website site:.com OR site:.org OR site:.ai'
+    linkedin_dork = f"{company_name} {description_keywords} site:linkedin.com"
+    careers_page_dork = f"{company_name} {description_keywords} (careers OR jobs) site:.com OR site:.org OR site:.ai"
+    jobs_page_dork = f"{company_name} {description_keywords} jobs site:.com OR site:.org OR site:.ai"
+
 
     def get_first_result(query):
         try:
@@ -55,7 +91,17 @@ def find_company_info(company_name, company_description):
             return ""
         return ""
     
+    def resolve_final_url(url):
+        try:
+            resp = requests.head(url, allow_redirects=True, timeout=5)
+            return resp.url
+        except:
+            return url
+
+    
     website_url = get_first_result(website_dork)
+    website_url = resolve_final_url(website_url)
+
     linkedin_url = get_first_result(linkedin_dork)
     # AT THIS POINT WE GET WEBSITE AND LINKEDIN
 
@@ -66,11 +112,13 @@ def find_company_info(company_name, company_description):
 
             if valid:
                 content_type = resp.headers.get("Content-Type", "")
-            if "text/html" in content_type:
-                return url_to_check
+                if "text/html" in content_type:
+                    return url_to_check
         return ""
     
     careers_page_url = career_paths_check(website_url)
+    if careers_page_url:
+        careers_page_url = resolve_final_url(careers_page_url)
 
     def career_page_has_jobs(careers_page_url):
         resp, valid = verify_url(careers_page_url, return_response=True)
@@ -99,8 +147,9 @@ def find_company_info(company_name, company_description):
     else:
         jobs_page_url = ""
         for portal in third_party_job_sites:
-            candidate = get_first_result(f"{company_name} jobs site:{portal}") # here need to check URL instead of name later
+            candidate = get_first_result(f"{company_name} jobs site:{portal}") #need to check company name instead of URL
             if candidate:
+                candidate = resolve_final_url(candidate)  # ensure final URL
                 jobs_page_url = candidate
                 break
 
@@ -188,8 +237,8 @@ def verify_url(url, return_response=False):
 # -----------------------------
 def main():
     # Example company
-    company_name = "Willow"
-    company_description = "Optimize buildings for security, sustainability, and efficiency with real-time integrated facility management."
+    company_name = "EcoVadis"
+    company_description = "Empowering companies with actionable insights to improve sustainability and reduce environmental impact."
 
     # Find company info
     info = find_company_info(company_name, company_description)
