@@ -1,0 +1,16 @@
+STEP 1,"Used google custom search API with company name + extracted keywords from the description using spacy, since multiple companies may exist with same name"
+STEP 2,used spacy NLP to extract 2-3 descriptive keywords
+STEP 3,"used google dorking techniques at first but i was banned by google, facing captcha – so i turned to google custom search API, they provide $300 worth of free credits"
+STEP 4,"used above technique to extract 100% of the given company websites and linkedin pages, also around 90% of the careers pages"
+STEP 5,Checked common career pages patters /careers /jobs etc on company websites
+STEP 6,ALSO implemented third party redirects to zoho lever etc
+STEP 7,implemented fallback search for company names with more than 1 word
+STEP 8,applied job title filter validation to filter nav elements and check legit job postings ONLY
+STEP 9 ,handled cloudflare blocking by checking only if page exists – as opposed to be able to access page directly
+STEP 10,added final data cleaner to clean dirty text from data
+,PLEASE CHECK MY METHODOLOGY.MD FILE FOR AN IN DEPTH LOOK INTO MY PROCESS
+,CLOUDFLARE BLOCKED ACCESS TO THE SITE FOR QUUITE A FEW CAREER PAGES WHICH LED TO ONLY ~90-100 JOB POSTINGS BEING SCRAPED
+,ALSO SOME JOB SITES USE INTRICATE JSON JAVASCRIPT STYLE TO DISPLAY POSTINSG WHICH WOULD HAVE REQUIRED MORE IN DEPTH PARSING
+,IT CAN BE IMPLEMENTED HOWEVER IT WOULD TAKE ME MORE TIME
+,
+,"TESTING RANDOM LINKS WORK 95% of the time, other times it redirects to some other site"

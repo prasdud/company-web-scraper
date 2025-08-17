@@ -20,7 +20,6 @@ import requests
 from bs4 import BeautifulSoup
 import json
 import re
-from urllib.parse import urljoin
 
 # -----------------------------
 # Configuration / Constants
@@ -31,8 +30,8 @@ MAX_TOTAL_JOBS = 200   # Stop after 200 jobs
 load_dotenv()
 
 # Google Custom Search API Configuration
-GOOGLE_API_KEY = os.getenv("CSE_API_KEY")  # Replace with your actual API key
-GOOGLE_CSE_ID = os.getenv("CSE_ID")   # Replace with your Custom Search Engine ID
+GOOGLE_API_KEY = os.getenv("CSE_API_KEY")
+GOOGLE_CSE_ID = os.getenv("CSE_ID")
 GOOGLE_API_ENDPOINT = "https://www.googleapis.com/customsearch/v1"
 
 nlp = spacy.load("en_core_web_sm")
@@ -40,11 +39,11 @@ nlp = spacy.load("en_core_web_sm")
 # -----------------------------
 # Shared Data Structures
 # -----------------------------
-company_queue = Queue()     # Companies to process
-collected_jobs = []         # All scraped job postings (thread-safe access needed)
+company_queue = Queue()
+collected_jobs = []
 collected_jobs_lock = threading.Lock()
 data = pd.read_csv(COMPANIES_FILE)
-careers_paths = ["/careers", "/jobs", "/about-us/careers", "/talent", "/join-us", "/career", "/en/careers", "/en-us/careers", "/company/careers", "/work-with-us", "/opportunities", "/openings", "/join-us/jobs"]
+careers_paths = ["/careers", "/jobs", "/about-us/careers", "/talent", "/join-us", "/career", "/en/careers", "/en-us/careers", "/company/careers", "/work-with-us", "/opportunities"]
 third_party_job_sites = [
     {
         "name": "Lever",
@@ -139,12 +138,6 @@ def rate_limited_search(query, site_restrict=None, delay=0.1):
 # -----------------------------
 # Functions
 # -----------------------------
-def resolve_final_url(url):
-    try:
-        resp = requests.head(url, allow_redirects=True, timeout=5)
-        return resp.url
-    except:
-        return url
 
 def find_company_info(company_name, company_description):
     
@@ -170,12 +163,20 @@ def find_company_info(company_name, company_description):
     description_keywords = " ".join(keywords)
     print(f"Description keywords -> {description_keywords} ")
 
+    flag_career_page_equals_jobs_page = False 
+
     # Modified search queries for Google Custom Search API
     website_dork = f'"{company_name}" {description_keywords} official website'
     linkedin_dork = f"{company_name} {description_keywords}"
     careers_page_dork = f"{company_name} {description_keywords} careers OR jobs"
+    jobs_page_dork = f"{company_name} {description_keywords} jobs"
 
-
+    def resolve_final_url(url):
+        try:
+            resp = requests.head(url, allow_redirects=True, timeout=5)
+            return resp.url
+        except:
+            return url
 
     # Using Google Custom Search API with site restrictions
     print(f"Searching for website...")
@@ -210,198 +211,299 @@ def find_company_info(company_name, company_description):
                 continue
         return ""
 
+
+    
     print(f"Checking career paths...")
     careers_page_url = career_paths_check(website_url)
     if careers_page_url:
         careers_page_url = resolve_final_url(careers_page_url)
         print(f"Found careers page: {careers_page_url}")
 
-    # FIXED: Enhanced career page analysis
-    def analyze_careers_page(careers_page_url):
-        """
-        Analyzes careers page to find actual jobs listing URL or detect third-party redirects
-        """
+    def career_page_has_jobs(careers_page_url):
         if not careers_page_url:
-            return "", ""
+            return False
             
         resp, valid = verify_url(careers_page_url, return_response=True)
-        if not valid:
-            return "", ""
-        
-        soup = BeautifulSoup(resp.text, "html.parser")
-        final_url = resp.url.lower()
-        
-        # Check if already redirected to third-party platform
-        third_party_domains = [
-            "smartrecruiters.com", "workday.com", "lever.co", "greenhouse.io", 
-            "workable.com", "zohorecruit.com", "bamboohr.com", "jobvite.com"
-        ]
-        
-        for domain in third_party_domains:
-            if domain in final_url:
-                print(f"Careers page redirected to {domain}: {resp.url}")
-                return resp.url, resp.url  # Both careers and jobs page are the same third-party URL
-        
-        # Check for JavaScript redirects
-        scripts = soup.find_all("script")
-        for script in scripts:
-            if script.string:
-                script_text = script.string.lower()
-                for domain in third_party_domains:
-                    if domain in script_text:
-                        # Try to extract the URL
-                        import re
-                        url_match = re.search(r'https?://[^"\'\\s]+' + domain + r'[^"\'\\s]*', script.string)
-                        if url_match:
-                            redirect_url = url_match.group()
-                            print(f"Found JS redirect to {domain}: {redirect_url}")
-                            return careers_page_url, redirect_url
-        
-        # Check for meta redirects
-        meta_refresh = soup.find("meta", {"http-equiv": "refresh"})
-        if meta_refresh and meta_refresh.get("content"):
-            content = meta_refresh.get("content").lower()
-            for domain in third_party_domains:
-                if domain in content:
-                    import re
-                    url_match = re.search(r'url=([^;]+)', content)
-                    if url_match:
-                        redirect_url = url_match.group(1)
-                        print(f"Found meta redirect to {domain}: {redirect_url}")
-                        return careers_page_url, redirect_url
-        
-        # Look for direct job listing page within careers page
-        job_listing_indicators = [
-            "current openings", "open positions", "view jobs", "job openings", 
-            "see all jobs", "browse jobs", "available positions", "all openings",
-            "job opportunities", "open roles", "view all positions"
-        ]
-        
-        all_links = soup.find_all("a", href=True)
-        for link in all_links:
-            href = link.get("href", "").lower()
-            text = link.get_text(strip=True).lower()
-            
-            # Skip navigation links
-            if any(skip in text for skip in ["careers", "about us", "home", "contact"]):
-                continue
-                
-            # Look for job listing indicators
-            if any(indicator in text for indicator in job_listing_indicators):
-                full_url = urljoin(careers_page_url, link.get("href"))
-                if verify_has_individual_job_listings(full_url):
-                    print(f"Found jobs listing page: {full_url}")
-                    return careers_page_url, full_url
-            
-            # Look for job-related URLs
-            if any(pattern in href for pattern in ["/jobs", "/openings", "/positions", "/opportunities"]) and href != "/careers":
-                full_url = urljoin(careers_page_url, link.get("href"))
-                if verify_has_individual_job_listings(full_url):
-                    print(f"Found jobs listing page via URL pattern: {full_url}")
-                    return careers_page_url, full_url
-        
-        # Check if careers page itself has job listings
-        if verify_has_individual_job_listings(careers_page_url):
-            print(f"Careers page itself contains job listings: {careers_page_url}")
-            return careers_page_url, careers_page_url
-            
-        return careers_page_url, ""
-
-    print(f"Analyzing careers page...")
-    careers_page_final, jobs_page_url = analyze_careers_page(careers_page_url)
-    
-    # If no jobs page found through careers page analysis, search third-party sites
-    if not jobs_page_url:
-        print(f"Searching for third-party job sites...")
-        jobs_page_url = search_third_party_sites(company_name, company_description)
-
-    return {
-        "website": website_url,
-        "linkedin": linkedin_url,
-        "careers_page": careers_page_final,
-        "jobs_page": jobs_page_url
-    }
-
-def verify_has_individual_job_listings(url):
-    """
-    FIXED: Verify that a page contains actual individual job postings
-    Lowered threshold from 2 to 1 job for better detection
-    """
-    try:
-        resp, valid = verify_url(url, return_response=True)
         if not valid:
             return False
         
         soup = BeautifulSoup(resp.text, "html.parser")
         
-        # Count potential individual job postings
-        job_count = 0
+        # Check if page redirects to third-party job platforms
+        third_party_domains = [
+            "smartrecruiters.com", "workday.com", "lever.co", "greenhouse.io", 
+            "workable.com", "zohorecruit.com", "bamboohr.com", "jobvite.com",
+            "indeed.com", "linkedin.com/jobs"
+        ]
         
-        # Method 1: Look for links to individual job pages
+        final_url = resp.url.lower()
+        for domain in third_party_domains:
+            if domain in final_url:
+                return False  # This is actually a third-party platform, not direct jobs
+        
+        # Look for direct job postings on the actual careers page
+        # Method 1: Individual job links that stay on same domain
         job_links = soup.find_all("a", href=True)
+        direct_job_count = 0
+        
         for link in job_links:
-            href = link.get("href", "").lower()
-            text = link.get_text(strip=True)
-            
-            # Must have substantial text (likely job title) and lead to individual job page
-            if (len(text) > 10 and len(text) < 150 and 
-                any(pattern in href for pattern in ["/job/", "/position/", "/opening/", "/apply/"]) and
-                not any(generic in text.lower() for generic in ["apply now", "view job", "learn more", "read more"])):
-                job_count += 1
-                
-        # Method 2: Look for structured job containers
-        job_containers = soup.find_all(["div", "article", "li"], 
-                                     class_=lambda x: x and any(term in x.lower() for term in ["job", "position", "opening", "role"]) if x else False)
+            href = link.get("href", "")
+            if href.startswith('/') or careers_page_url.split('/')[2] in href:  # Same domain
+                if any(pattern in href.lower() for pattern in ["/job/", "/position/", "/opening/", "/role/"]):
+                    direct_job_count += 1
         
+        if direct_job_count >= 1:
+            return True
+        
+        # Method 2: Look for embedded job listings (not external redirects)
+        job_containers = soup.find_all(["div", "article", "section"], 
+                                    class_=lambda x: x and "job" in x.lower() if x else False)
+        
+        actual_jobs = 0
         for container in job_containers:
-            container_text = container.get_text(strip=True)
-            # Must contain job title-like content and apply mechanism
-            if (len(container_text) > 50 and len(container_text) < 500 and
-                any(title_word in container_text.lower() for title_word in 
-                    ["engineer", "developer", "manager", "analyst", "specialist", "coordinator", "director", "lead"]) and
-                any(apply_word in container_text.lower() for apply_word in ["apply", "view", "learn more"])):
-                job_count += 1
+            container_text = container.get_text()
+            # Must have job title AND apply mechanism AND be substantial content
+            if (len(container_text) > 100 and 
+                any(title in container_text.lower() for title in 
+                    ["engineer", "developer", "manager", "analyst", "specialist", "coordinator"]) and
+                any(action in container_text.lower() for action in ["apply", "view details", "learn more"])):
+                actual_jobs += 1
         
-        # Method 3: Check for third-party job platform indicators
-        page_text = soup.get_text().lower()
-        if any(indicator in page_text for indicator in [
-            "view all jobs", "apply now", "current openings", "we're hiring",
-            "job openings", "open positions", "join our team"
-        ]):
-            job_count += 1
+        return actual_jobs >= 1
+
+    def find_actual_jobs_page_from_careers(careers_page_url):
+        """
+        FIXED: Look for the actual jobs listing page within the careers page
+        Instead of just returning the careers page URL, find the specific jobs listing URL
+        """
+        if not careers_page_url:
+            return ""
+            
+        resp, valid = verify_url(careers_page_url, return_response=True)
+        if not valid:
+            return ""
         
-        return job_count >= 0  # FIXED: Lowered from 2 to 1
+        soup = BeautifulSoup(resp.text, "html.parser")
         
-    except:
-        return False
+        # Look for links that lead to actual job listings
+        job_listing_indicators = [
+            "current openings", "open positions", "view jobs", "job openings", 
+            "see all jobs", "browse jobs", "available positions", "all openings",
+            "job opportunities", "open roles"
+        ]
+        
+        # Method 1: Look for specific job listing page links
+        all_links = soup.find_all("a", href=True)
+        for link in all_links:
+            href = link.get("href", "").lower()
+            text = link.get_text(strip=True).lower()
+            
+            # Skip if it's just navigation back to careers
+            if any(skip in text for skip in ["careers", "about us", "home", "contact"]):
+                continue
+                
+            # Look for job listing page indicators in text or URL
+            if any(indicator in text for indicator in job_listing_indicators):
+                full_url = urljoin(careers_page_url, link.get("href"))
+                # Verify this URL actually has job listings
+                if verify_has_individual_job_listings(full_url):
+                    return full_url
+            
+            # Look for URLs that indicate job listings
+            if any(pattern in href for pattern in ["/jobs", "/openings", "/positions", "/opportunities"]) and href != "/careers":
+                full_url = urljoin(careers_page_url, link.get("href"))
+                if verify_has_individual_job_listings(full_url):
+                    return full_url
+        
+        # Method 2: If careers page itself has individual job listings, return it
+        if verify_has_individual_job_listings(careers_page_url):
+            return careers_page_url
+            
+        return ""
+
+    def verify_has_individual_job_listings(url):
+        """
+        FIXED: Verify that a page contains actual individual job postings, not just general careers info
+        """
+        try:
+            resp, valid = verify_url(url, return_response=True)
+            if not valid:
+                return False
+            
+            soup = BeautifulSoup(resp.text, "html.parser")
+            
+            # Count potential individual job postings
+            job_count = 0
+            
+            # Method 1: Look for links to individual job pages
+            job_links = soup.find_all("a", href=True)
+            for link in job_links:
+                href = link.get("href", "").lower()
+                text = link.get_text(strip=True)
+                
+                # Must have substantial text (likely job title) and lead to individual job page
+                if (len(text) > 10 and len(text) < 100 and 
+                    any(pattern in href for pattern in ["/job/", "/position/", "/opening/", "/apply/"]) and
+                    not any(generic in text.lower() for generic in ["apply now", "view job", "learn more", "read more"])):
+                    job_count += 1
+                    
+            # Method 2: Look for structured job containers
+            job_containers = soup.find_all(["div", "article", "li"], 
+                                         class_=lambda x: x and any(term in x.lower() for term in ["job", "position", "opening", "role"]) if x else False)
+            
+            for container in job_containers:
+                container_text = container.get_text(strip=True)
+                # Must contain job title-like content and apply mechanism
+                if (len(container_text) > 50 and len(container_text) < 500 and
+                    any(title_word in container_text.lower() for title_word in 
+                        ["engineer", "developer", "manager", "analyst", "specialist", "coordinator", "director", "lead"]) and
+                    any(apply_word in container_text.lower() for apply_word in ["apply", "view", "learn more"])):
+                    job_count += 1
+            
+            return job_count >= 2  # Must have at least 2 job listings to be considered valid
+            
+        except:
+            return False
+
+    print(f"Checking if careers page has jobs...")
+    jobs_page_url = ""
+    
+    if career_page_has_jobs(careers_page_url):
+        # Issue - Instead of just using careers page, find the actual jobs listing page
+        actual_jobs_page = find_actual_jobs_page_from_careers(careers_page_url)
+        if actual_jobs_page:
+            jobs_page_url = actual_jobs_page
+            print(f"Found actual jobs listing page: {jobs_page_url}")
+        else:
+            jobs_page_url = careers_page_url  # Fallback to careers page
+            print(f"Using careers page as jobs page: {jobs_page_url}")
+    else:
+        print(f"Searching for third-party job sites...")
+        # Enhanced third-party site search with better targeting
+        for portal in third_party_job_sites:
+            portal_name = portal["name"].lower()
+            candidate_url = ""
+            
+            for pattern in portal["patterns"]:
+                
+                # Method 1: Direct URL construction (most reliable)
+                company_slug = company_name.lower().replace(" ", "").replace(".", "").replace("-", "")
+                company_slug_dash = company_name.lower().replace(" ", "-").replace(".", "")
+                
+                # Try different slug variations
+                #for slug in [company_slug, company_slug_dash, company_name.lower()]:
+                #    test_url = pattern.format(company_name=slug)
+                #    if verify_url(test_url):
+                #        candidate_url = test_url
+                #        print(f"Found {portal_name} via direct URL: {test_url}")
+                #        break
+                
+                if candidate_url:
+                    break
+                    
+                # Method 2: Targeted API search only if direct URL fails
+                if "lever" in portal_name:
+                    search_query = f'"{company_name}" site:jobs.lever.co'
+                    results = google_search_api(search_query, num_results=3)
+                    for result in results:
+                        if company_name.lower().replace(" ", "") in result.lower():
+                            candidate_url = result
+                            break
+                            
+                elif "greenhouse" in portal_name:
+                    search_query = f'"{company_name}" site:boards.greenhouse.io'
+                    results = google_search_api(search_query, num_results=3)
+                    for result in results:
+                        if company_name.lower().replace(" ", "") in result.lower():
+                            candidate_url = result
+                            break
+                            
+                elif "smartrecruiters" in portal_name:
+                    search_query = f'"{company_name}" site:careers.smartrecruiters.com'
+                    results = google_search_api(search_query, num_results=3)
+                    for result in results:
+                        if company_name.lower().replace(" ", "") in result.lower():
+                            candidate_url = result
+                            break
+                            
+                
+            if candidate_url:
+                candidate_url = resolve_final_url(candidate_url)
+                
+                # Verify the portal page actually has jobs AND belongs to the right company
+                if (verify_portal_has_jobs(candidate_url, portal_name) and 
+                    company_name.lower().replace(" ", "") in candidate_url.lower()):
+                    jobs_page_url = candidate_url
+                    print(f"Found active jobs on {portal_name}: {jobs_page_url}")
+                    break
+                    
+            # If we found jobs on this portal, stop searching other portals
+            if jobs_page_url:
+                break
+
+    return {
+        "website": website_url,
+        "linkedin": linkedin_url,
+        "careers_page": careers_page_url,
+        "jobs_page": jobs_page_url
+    }
+
 
 def is_valid_job_title(title):
-    """Super lenient job title validation for quick results"""
-    if not title or len(title.strip()) < 2:
+    """
+    FIXED: Validate if text looks like an actual job title, not navigation text
+    """
+    if not title or len(title.strip()) < 3:
         return False
     
     title_lower = title.lower().strip()
     
-    # Only reject obvious junk
-    reject_words = [
-        "click here", "apply now", "view all", "see all", "home", "back", "next", "previous",
-        "http", "www", "lorem ipsum", "test", "example"
+    # Filter out obvious navigation/action words
+    navigation_words = [
+        "jobs", "careers", "apply now", "view job", "view all", "see all", 
+        "learn more", "read more", "more details", "browse", "search",
+        "open positions", "current openings", "available", "opportunities",
+        "join us", "work with us", "home", "about", "contact", "back",
+        "next", "previous", "filter", "sort", "location", "department",
+        "full time", "part time", "remote", "hybrid", "contract",
+        "submit", "upload", "resume", "cv", "apply", "application"
     ]
     
-    if any(reject in title_lower for reject in reject_words):
+    # Reject if title is exactly a navigation word
+    if title_lower in navigation_words:
         return False
-        
-    # Reject if too long (descriptions)
-    if len(title) > 250:
+    
+    # Reject if title is too short and generic
+    if len(title_lower) < 8 and any(nav in title_lower for nav in navigation_words):
         return False
-        
-    # Accept almost everything else
-    return True
+    
+    # Reject if title is too long (likely description text)
+    if len(title) > 150:
+        return False
+    
+    # Must contain at least one word that suggests it's a job title
+    job_title_indicators = [
+        "engineer", "developer", "manager", "director", "lead", "senior", "junior",
+        "analyst", "specialist", "coordinator", "assistant", "associate",
+        "representative", "consultant", "advisor", "architect", "designer",
+        "scientist", "researcher", "technician", "supervisor", "executive",
+        "officer", "head", "chief", "principal", "staff", "intern"
+    ]
+    
+    # Check if it contains job title indicators
+    has_job_indicator = any(indicator in title_lower for indicator in job_title_indicators)
+    
+    # Also accept titles that look like proper nouns (capitalized) and reasonable length
+    looks_like_title = (title.count(' ') >= 1 and title.count(' ') <= 8 and 
+                       any(word[0].isupper() for word in title.split() if word))
+    
+    return has_job_indicator or looks_like_title
 
 
 def scrape_jobs(jobs_page_url, max_jobs=3):
     """
-    FIXED: Enhanced job scraping with better Lever.co support and more flexible selectors
+    FIXED: Scrape top 'max_jobs' from the jobs page with better job title validation
+    Returns a list of dicts: {'title': ..., 'url': ...}
     """
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -416,45 +518,6 @@ def scrape_jobs(jobs_page_url, max_jobs=3):
 
     soup = BeautifulSoup(resp.text, "html.parser")
     jobs = []
-
-    # -----------------------------
-    # Lever.co specific scraping (FIXED)
-    # -----------------------------
-    if "lever.co" in jobs_page_url:
-        print("Detected Lever.co - using specific selectors")
-        
-        # Method 1: posting-title class with h5 data-qa
-        lever_jobs = soup.find_all("a", class_="posting-title")
-        for job_link in lever_jobs:
-            if len(jobs) >= max_jobs:
-                break
-            h5_tag = job_link.find("h5", {"data-qa": "posting-name"})
-            if h5_tag:
-                title = h5_tag.get_text(strip=True)
-                url = job_link.get("href")
-                if title and url and is_valid_job_title(title):
-                    if not url.startswith("http"):
-                        url = urljoin(jobs_page_url, url)
-                    jobs.append({"title": title, "url": url})
-        
-        # Method 2: Direct h5 with data-qa (backup)
-        if not jobs:
-            h5_tags = soup.find_all("h5", {"data-qa": "posting-name"})
-            for h5 in h5_tags:
-                if len(jobs) >= max_jobs:
-                    break
-                title = h5.get_text(strip=True)
-                # Find parent link
-                parent_link = h5.find_parent("a", href=True)
-                if parent_link:
-                    url = parent_link.get("href")
-                    if title and url and is_valid_job_title(title):
-                        if not url.startswith("http"):
-                            url = urljoin(jobs_page_url, url)
-                        jobs.append({"title": title, "url": url})
-        
-        if jobs:
-            return jobs[:max_jobs]
 
     # -----------------------------
     # JS-heavy portals: Look for JSON or embedded jobs
@@ -480,58 +543,50 @@ def scrape_jobs(jobs_page_url, max_jobs=3):
                             url = urljoin(jobs_page_url, url)
                         if title and url and is_valid_job_title(title):
                             jobs.append({"title": title, "url": url})
-            if jobs:
-                return jobs[:max_jobs]
+            return jobs[:max_jobs]
         except Exception as e:
             print("Error parsing JS jobs JSON:", e)
+            # fallback to normal HTML scraping
 
     # -----------------------------
-    # Enhanced HTML scraping with more selectors
+    # FIXED: HTML scraping with better job detection
     # -----------------------------
     
-    # Method 1: Look for structured job containers
-    job_selectors = [
-        {"class": lambda x: x and any(term in x.lower() for term in ["job", "position", "opening", "role", "listing"]) if x else False},
-        {"data-testid": lambda x: x and "job" in x.lower() if x else False},
-        {"data-qa": lambda x: x and any(term in x.lower() for term in ["job", "posting"]) if x else False}
-    ]
+    # Method 1: Look for structured job containers first
+    job_containers = soup.find_all(["div", "article", "li", "tr"], 
+                                  class_=lambda x: x and any(term in x.lower() for term in ["job", "position", "opening", "role", "listing"]) if x else False)
     
-    for selector in job_selectors:
-        if jobs:
+    for container in job_containers:
+        if len(jobs) >= max_jobs:
             break
-        job_containers = soup.find_all(["div", "article", "li", "tr"], **selector)
-        
-        for container in job_containers:
-            if len(jobs) >= max_jobs:
-                break
-                
-            # Look for job title link within container
-            title_link = container.find("a", href=True)
-            if title_link:
-                href = title_link.get("href")
-                title = title_link.get_text(strip=True)
-                
-                if (href and title and is_valid_job_title(title) and
-                    any(keyword in href.lower() for keyword in ["/job", "/position", "/opening", "/apply"])):
-                    full_url = urljoin(jobs_page_url, href)
-                    jobs.append({"title": title, "url": full_url})
-                    continue
             
-            # Look for title in heading tags within container
-            for heading_tag in ["h1", "h2", "h3", "h4", "h5"]:
-                heading = container.find(heading_tag)
-                if heading:
-                    title = heading.get_text(strip=True)
-                    # Look for associated link
-                    link = heading.find("a", href=True) or container.find("a", href=True)
-                    if link and is_valid_job_title(title):
-                        href = link.get("href")
-                        if any(keyword in href.lower() for keyword in ["/job", "/position", "/opening", "/apply"]):
-                            full_url = urljoin(jobs_page_url, href)
-                            jobs.append({"title": title, "url": full_url})
-                            break
-
-    # Method 2: Direct link scraping with enhanced patterns
+        # Look for job title link within container
+        title_link = container.find("a", href=True)
+        if title_link:
+            href = title_link.get("href")
+            title = title_link.get_text(strip=True)
+            
+            if (href and title and is_valid_job_title(title) and
+                any(keyword in href.lower() for keyword in ["/job", "/position", "/opening", "/apply"])):
+                full_url = urljoin(jobs_page_url, href)
+                jobs.append({"title": title, "url": full_url})
+                continue
+        
+        # Alternative: look for title in heading tags within container
+        for heading_tag in ["h1", "h2", "h3", "h4", "h5"]:
+            heading = container.find(heading_tag)
+            if heading:
+                title = heading.get_text(strip=True)
+                # Look for associated link
+                link = heading.find("a", href=True) or container.find("a", href=True)
+                if link and is_valid_job_title(title):
+                    href = link.get("href")
+                    if any(keyword in href.lower() for keyword in ["/job", "/position", "/opening", "/apply"]):
+                        full_url = urljoin(jobs_page_url, href)
+                        jobs.append({"title": title, "url": full_url})
+                        break
+    
+    # Method 2: If no structured containers found, fall back to link scraping with strict filtering
     if not jobs:
         job_links = soup.find_all("a", href=True)
         for link in job_links:
@@ -544,16 +599,16 @@ def scrape_jobs(jobs_page_url, max_jobs=3):
             if not href or not title:
                 continue
             
-            # Enhanced job link detection
-            if (any(keyword in href.lower() for keyword in ["/job/", "/jobs/", "/position/", "/opening/", "/apply/"]) and
+            # Must have job-related URL pattern AND valid job title
+            if (any(keyword in href.lower() for keyword in ["/job/", "/jobs/", "/position/", "/opening/"]) and
                 not any(skip in href.lower() for skip in ["/jobs", "/careers", "/positions"]) and  # Skip general pages
                 is_valid_job_title(title) and
-                len(title.split()) >= 1):  # FIXED: Reduced from 2 to 1 word minimum
+                len(title.split()) >= 2):  # Job titles usually have multiple words
                 
                 full_url = urljoin(jobs_page_url, href)
                 jobs.append({"title": title, "url": full_url})
 
-    # Method 3: JSON-LD structured data
+    # Method 3: Look for JSON-LD structured data (common on modern sites)
     if not jobs:
         json_scripts = soup.find_all("script", type="application/ld+json")
         for script in json_scripts:
@@ -645,14 +700,7 @@ def process_companies_csv(file_path="data.csv", max_jobs=200):
         # Use your existing logic
         # -----------------------------
         info = find_company_info(company_name, company_description)
-        # After your current info = find_company_info() call
-        if not info.get("jobs_page"):
-            # Desperate fallback - try the website directly
-            if info.get("website"):
-                test_jobs = scrape_jobs(info["website"])
-                if test_jobs:
-                    info["jobs_page"] = info["website"]
-                    print(f"Found jobs directly on website: {info['website']}")
+
         # Fill URLs in the dataframe
         data.at[idx, "Website URL"] = info.get("website", "")
         data.at[idx, "Linkedin URL"] = info.get("linkedin", "")
@@ -662,24 +710,14 @@ def process_companies_csv(file_path="data.csv", max_jobs=200):
         # -----------------------------
         # FIXED: Only scrape from proper job listing pages, not careers pages
         # -----------------------------
-        # -----------------------------
-        # Enhanced: Try jobs page first, then careers page as fallback
-        # -----------------------------
-        jobs_page_url = info.get("jobs_page") or info.get("careers_page")  # EMERGENCY HACK: Added careers fallback
+        jobs_page_url = info.get("jobs_page")  # Removed fallback to careers_page
         if jobs_page_url:
             jobs = scrape_jobs(jobs_page_url)
-            
-            # NEW: If no jobs found, try scraping any links from the careers page
-            if not jobs and info.get("careers_page") and info.get("careers_page") != jobs_page_url:
-                backup_jobs = scrape_jobs(info["careers_page"])
-                if backup_jobs:
-                    jobs = backup_jobs
-                    print(f"Found backup jobs on careers page for {company_name}")
             
             # FIXED: Validate each job before adding
             valid_jobs = [job for job in jobs if verify_job(job)]
             
-            for i, job in enumerate(valid_jobs[:5]):  # CHANGED: max 5 jobs per company instead of 3
+            for i, job in enumerate(valid_jobs[:3]):  # max 3 jobs per company
                 data.at[idx, f"job post{i+1} URL"] = job["url"]
                 data.at[idx, f"job post{i+1} title"] = job["title"]
                 total_jobs_counter += 1
@@ -777,96 +815,7 @@ def verify_url(url, return_response=False):
             return None, False
         return False
 
-def search_third_party_sites(company_name, company_description):
-    """
-    Enhanced third-party job site search with better company name handling
-    """
-    def generate_company_slugs(company_name):
-        """Generate different variations of company name for URL matching"""
-        base_name = company_name.lower()
-        
-        # Clean the base name first
-        cleaned_name = base_name.replace(".", "").replace(",", "").replace("'", "").replace('"', '')
-        
-        slugs = [
-            cleaned_name.replace(" ", "").replace("-", ""),  # climateanalytics
-            cleaned_name.replace(" ", "-"),  # climate-analytics
-            cleaned_name.replace(" ", "_"),  # climate_analytics
-            cleaned_name,  # climate analytics
-        ]
-        
-        # Remove duplicates and empty strings
-        unique_slugs = []
-        for slug in slugs:
-            if slug and slug not in unique_slugs and len(slug) > 0:
-                # Additional validation - no double dots, underscores at end, etc.
-                slug = slug.strip("_-.")
-                if slug and not slug.startswith(".") and not slug.endswith("."):
-                    unique_slugs.append(slug)
-        
-        return unique_slugs
-    
-    company_slugs = generate_company_slugs(company_name)
-    
-    for portal in third_party_job_sites:
-        portal_name = portal["name"].lower()
-        candidate_url = ""
-        
-    # Method 1: Direct URL construction with multiple slug variations
-    for pattern in portal["patterns"]:
-        for slug in company_slugs:
-            # Validate slug before using it
-            if not slug or ".." in slug or slug.startswith(".") or slug.endswith("."):
-                continue
-                
-            test_url = pattern.format(company_name=slug)
-            
-            # Additional URL validation
-            if ".." in test_url or "._" in test_url or "_." in test_url:
-                continue
-                
-            if verify_url(test_url):
-                # Verify it actually has jobs and belongs to the company
-                if verify_portal_has_jobs(test_url, portal_name):
-                    candidate_url = test_url
-                    print(f"Found {portal_name} via direct URL: {test_url}")
-                    break
-        if candidate_url:
-            break
-                
-        # Method 2: API search if direct URL fails
-        if not candidate_url:
-            search_query = ""
-            if "lever" in portal_name:
-                search_query = f'"{company_name}" site:jobs.lever.co'
-            elif "greenhouse" in portal_name:
-                search_query = f'"{company_name}" site:boards.greenhouse.io'
-            elif "smartrecruiters" in portal_name:
-                search_query = f'"{company_name}" site:careers.smartrecruiters.com OR site:jobs.smartrecruiters.com'
-            elif "workable" in portal_name:
-                search_query = f'"{company_name}" site:workable.com apply'
-            elif "zoho" in portal_name:
-                search_query = f'"{company_name}" site:zohorecruit.com'
-                
-            if search_query:
-                results = google_search_api(search_query, num_results=5)
-                for result in results:
-                    # Check if any of our company slugs appear in the result URL
-                    result_lower = result.lower()
-                    for slug in company_slugs:
-                        if slug in result_lower:
-                            if verify_portal_has_jobs(result, portal_name):
-                                candidate_url = result
-                                print(f"Found {portal_name} via API search: {result}")
-                                break
-                    if candidate_url:
-                        break
-        
-        # If we found a working portal, return it
-        if candidate_url:
-            return resolve_final_url(candidate_url)
-            
-    return ""
+
 
 # -----------------------------
 # Main Execution
@@ -927,32 +876,6 @@ def main():
     print("-"*50 + "\n")
     print("✅ Test complete.")
 
-
-def quick_cleanup_csv(file_path):
-    data = pd.read_csv(file_path)
-    
-    for idx, row in data.iterrows():
-        for i in range(1, 6):
-            title_col = f"job post{i} title"
-            url_col = f"job post{i} URL"
-            
-            if title_col in data.columns:
-                title = str(row[title_col])
-                
-                # Clean obvious junk titles
-                if any(junk in title.lower() for junk in ["nan", "none", "apply now", "view job"]):
-                    data.at[idx, title_col] = ""
-                    data.at[idx, url_col] = ""
-                    
-                elif title and title != "":
-                    data.at[idx, title_col] = title.title()
-    
-    data.to_csv(file_path, index=False)
-    print("Quick cleanup completed")
-
-# Run after your main scraper
-
 if __name__ == "__main__":
     process_companies_csv("data.csv", max_jobs=200)
-    quick_cleanup_csv("data.csv")
 
